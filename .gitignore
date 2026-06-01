@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+*.pyc
+coffee_counter.sqlite3
+.streamlit/secrets.toml
