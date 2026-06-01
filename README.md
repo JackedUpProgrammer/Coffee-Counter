@@ -2,6 +2,8 @@
 
 A small Streamlit app with a local SQLite database for tracking in-house coffees per employee.
 
+Coffee logs are not counted immediately. Every other active employee must approve and rate the coffee first. The next coffee maker is the active employee with the fewest approved cups; if everyone is tied, the lowest average rating breaks the tie.
+
 ## Setup
 
 ```powershell
