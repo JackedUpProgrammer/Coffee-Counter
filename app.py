@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import sqlite3
 from contextlib import closing
 from datetime import date
@@ -12,6 +14,145 @@ import streamlit as st
 
 APP_DIR = Path(__file__).parent
 DB_PATH = APP_DIR / "coffee_counter.sqlite3"
+PASSWORD_SALT = b"coffee-counter-admin-v1"
+PASSWORD_ITERATIONS = 260000
+ADMIN_NAME = "Johan"
+ADMIN_PASSWORD_HASH = "82929370affdd9b9108ecea051c331ba5d6fcf1bf7f984fb98d2017e21163cfc"
+
+PASS_MARK = 90
+TRAINING_QUESTIONS = [
+    {
+        "question": "When does a logged coffee count in the approved totals?",
+        "options": [
+            "After every other active employee approves and rates it",
+            "Immediately after it is logged",
+            "After the person who made it rates it",
+            "At the end of the day",
+        ],
+        "answer": "After every other active employee approves and rates it",
+    },
+    {
+        "question": "Who is allowed to review a coffee?",
+        "options": [
+            "Other active employees, not the person who made it",
+            "Only the person who made it",
+            "Only archived employees",
+            "Anyone, including the maker",
+        ],
+        "answer": "Other active employees, not the person who made it",
+    },
+    {
+        "question": "What happens if one reviewer rejects a coffee?",
+        "options": [
+            "The coffee is marked rejected and does not count",
+            "The coffee still counts if the rating is high",
+            "The coffee is deleted automatically",
+            "The maker can approve it themselves",
+        ],
+        "answer": "The coffee is marked rejected and does not count",
+    },
+    {
+        "question": "Can a user delete a coffee from the app?",
+        "options": [
+            "No, coffee logs stay visible",
+            "Yes, from the Logbook tab",
+            "Yes, but only before approval",
+            "Yes, after all reviewers approve",
+        ],
+        "answer": "No, coffee logs stay visible",
+    },
+    {
+        "question": "Who should make the next coffee when someone is behind?",
+        "options": [
+            "The active employee with the fewest approved cups",
+            "The person with the most approved cups",
+            "The newest employee",
+            "The last reviewer",
+        ],
+        "answer": "The active employee with the fewest approved cups",
+    },
+    {
+        "question": "If everyone is tied on approved cups, what breaks the tie?",
+        "options": [
+            "The lowest average rating",
+            "The highest average rating",
+            "Alphabetical order only",
+            "The most recent coffee log",
+        ],
+        "answer": "The lowest average rating",
+    },
+    {
+        "question": "Where do you approve and rate coffees?",
+        "options": [
+            "Review tab",
+            "Log tab",
+            "Totals tab",
+            "Logbook tab",
+        ],
+        "answer": "Review tab",
+    },
+    {
+        "question": "Where do you record that someone made coffee?",
+        "options": [
+            "Log tab",
+            "Review tab",
+            "People tab",
+            "Totals tab",
+        ],
+        "answer": "Log tab",
+    },
+    {
+        "question": "What does the Logbook show?",
+        "options": [
+            "Recent coffee logs with approval status and review progress",
+            "Only employees who passed training",
+            "Only rejected coffees",
+            "Only the next coffee maker",
+        ],
+        "answer": "Recent coffee logs with approval status and review progress",
+    },
+    {
+        "question": "What is the required score for barista training?",
+        "options": [
+            "90%",
+            "50%",
+            "75%",
+            "100%",
+        ],
+        "answer": "90%",
+    },
+]
+
+LEARN_SECTIONS = [
+    (
+        "1. Log coffee",
+        "Use the Log tab when someone makes coffee. Choose the employee, enter the number of cups, pick the date, and submit it for approval.",
+    ),
+    (
+        "2. Approve and rate",
+        "A coffee only counts after every other active employee approves it and gives a rating from 1 to 5. The person who made the coffee cannot review their own coffee.",
+    ),
+    (
+        "3. Rejections",
+        "If any reviewer rejects a coffee, that coffee is marked rejected and does not count in approved totals. It stays visible in the logbook.",
+    ),
+    (
+        "4. No deleting",
+        "Coffee logs cannot be deleted from the app. Mistakes remain visible so the tally stays transparent.",
+    ),
+    (
+        "5. Next coffee maker",
+        "The next coffee maker is the active employee with the fewest approved cups. If employees are tied on approved cups, the lowest average rating breaks the tie.",
+    ),
+    (
+        "6. Where to look",
+        "Use Totals to compare approved cups and average ratings. Use Logbook to see recent coffee logs, approval status, and review progress.",
+    ),
+    (
+        "7. Joining the counter",
+        "New employees must pass barista training with at least 90%. The test checks that you know how logging, approvals, ratings, and next-maker selection work.",
+    ),
+]
 
 
 def inject_styles() -> None:
@@ -19,18 +160,23 @@ def inject_styles() -> None:
         """
         <style>
             :root {
-                --coffee-ink: #1f2933;
-                --coffee-muted: #5b6777;
-                --coffee-line: #d8dee8;
-                --coffee-panel: #ffffff;
-                --coffee-soft: #f6f8fb;
-                --coffee-accent: #256f68;
-                --coffee-accent-dark: #15534f;
+                --coffee-bg: #071018;
+                --coffee-panel: rgba(12, 25, 36, 0.82);
+                --coffee-panel-strong: rgba(17, 36, 50, 0.95);
+                --coffee-ink: #edf7fb;
+                --coffee-muted: #9db1bf;
+                --coffee-line: rgba(132, 204, 255, 0.18);
+                --coffee-accent: #38d9c4;
+                --coffee-accent-dark: #17a998;
+                --coffee-warm: #ffc857;
+                --coffee-danger: #ff6b8a;
             }
 
             [data-testid="stAppViewContainer"] {
                 background:
-                    linear-gradient(180deg, #f7fafc 0%, #eef3f7 100%);
+                    radial-gradient(circle at 14% 8%, rgba(56, 217, 196, 0.18), transparent 32rem),
+                    radial-gradient(circle at 86% 0%, rgba(255, 200, 87, 0.13), transparent 30rem),
+                    linear-gradient(135deg, #071018 0%, #0b1621 48%, #05080d 100%);
             }
 
             [data-testid="stHeader"],
@@ -41,8 +187,8 @@ def inject_styles() -> None:
             }
 
             .block-container {
-                max-width: 1180px;
-                padding-top: 2rem;
+                max-width: 1220px;
+                padding-top: 1.6rem;
                 padding-bottom: 3rem;
             }
 
@@ -52,9 +198,10 @@ def inject_styles() -> None:
             }
 
             h1 {
-                font-size: 2.25rem;
-                font-weight: 750;
-                margin-bottom: 0.25rem;
+                font-size: 2.55rem;
+                font-weight: 800;
+                margin-bottom: 0.45rem;
+                text-shadow: 0 0 28px rgba(56, 217, 196, 0.2);
             }
 
             h2, h3 {
@@ -65,17 +212,25 @@ def inject_styles() -> None:
                 color: var(--coffee-muted);
             }
 
+            [data-testid="stCaptionContainer"] {
+                color: var(--coffee-muted);
+            }
+
             div[data-testid="stMetric"] {
                 background: var(--coffee-panel);
                 border: 1px solid var(--coffee-line);
                 border-radius: 8px;
-                padding: 1rem 1.1rem;
-                box-shadow: 0 10px 28px rgba(31, 41, 51, 0.06);
+                padding: 0.85rem 1rem;
+                box-shadow: 0 18px 46px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+                backdrop-filter: blur(14px);
             }
 
             div[data-testid="stMetricLabel"] p {
                 color: var(--coffee-muted);
-                font-size: 0.85rem;
+                font-size: 0.8rem;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+                font-weight: 750;
             }
 
             div[data-testid="stMetricValue"] {
@@ -86,66 +241,117 @@ def inject_styles() -> None:
             [data-testid="stVerticalBlockBorderWrapper"] {
                 border-color: var(--coffee-line);
                 border-radius: 8px;
-                background: rgba(255, 255, 255, 0.88);
-                box-shadow: 0 12px 34px rgba(31, 41, 51, 0.06);
+                background: var(--coffee-panel);
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+                backdrop-filter: blur(16px);
             }
 
             div[data-baseweb="tab-list"] {
                 gap: 0.35rem;
                 border-bottom: 1px solid var(--coffee-line);
+                padding-bottom: 0.65rem;
+            }
+
+            div[data-baseweb="tab-highlight"] {
+                display: none;
             }
 
             button[data-baseweb="tab"] {
-                border-radius: 7px 7px 0 0;
+                border-radius: 7px;
                 color: var(--coffee-muted);
                 font-weight: 650;
+                background: rgba(255, 255, 255, 0.03);
+                min-width: 5.25rem;
+                min-height: 2.35rem;
+                padding: 0.45rem 0.8rem;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border: 1px solid var(--coffee-line);
             }
 
             button[data-baseweb="tab"][aria-selected="true"] {
-                color: var(--coffee-accent-dark);
-                background: #e8f3f1;
+                color: #061115 !important;
+                background: linear-gradient(135deg, var(--coffee-accent), #9df6e7) !important;
+                border-color: rgba(56, 217, 196, 0.7);
             }
 
             .stButton button,
             .stFormSubmitButton button {
                 border-radius: 7px;
                 font-weight: 650;
+                border-color: var(--coffee-line);
+                background: rgba(255, 255, 255, 0.04);
+                color: var(--coffee-ink);
             }
 
             .stButton button[kind="primary"],
             .stFormSubmitButton button[kind="primary"] {
-                background: var(--coffee-accent);
+                background: linear-gradient(135deg, var(--coffee-accent), #a7f6ea);
                 border-color: var(--coffee-accent);
+                color: #061115;
+                box-shadow: 0 12px 34px rgba(56, 217, 196, 0.2);
             }
 
             .stButton button[kind="primary"]:hover,
             .stFormSubmitButton button[kind="primary"]:hover {
-                background: var(--coffee-accent-dark);
+                background: linear-gradient(135deg, var(--coffee-accent-dark), #62ead9);
                 border-color: var(--coffee-accent-dark);
             }
 
-            .next-maker {
-                background: linear-gradient(135deg, #ffffff 0%, #edf7f5 100%);
+            input, textarea, [data-baseweb="select"] > div {
+                background: rgba(255, 255, 255, 0.04) !important;
+                border-color: var(--coffee-line) !important;
+                color: var(--coffee-ink) !important;
+            }
+
+            [data-testid="stDataFrame"] {
                 border: 1px solid var(--coffee-line);
-                border-left: 6px solid var(--coffee-accent);
                 border-radius: 8px;
-                padding: 1.1rem 1.25rem;
+                overflow: hidden;
+            }
+
+            [data-testid="stExpander"] {
+                border-color: var(--coffee-line);
+                background: rgba(255, 255, 255, 0.03);
+                border-radius: 8px;
+            }
+
+            .next-maker {
+                position: relative;
+                overflow: hidden;
+                background:
+                    linear-gradient(135deg, rgba(56, 217, 196, 0.18), rgba(255, 200, 87, 0.08)),
+                    var(--coffee-panel-strong);
+                border: 1px solid rgba(56, 217, 196, 0.34);
+                border-radius: 8px;
+                padding: 1.25rem 1.35rem;
                 margin-bottom: 1rem;
-                box-shadow: 0 12px 34px rgba(31, 41, 51, 0.07);
+                box-shadow: 0 22px 70px rgba(0, 0, 0, 0.32), 0 0 42px rgba(56, 217, 196, 0.08);
+                backdrop-filter: blur(16px);
+            }
+
+            .next-maker:before {
+                content: "";
+                position: absolute;
+                inset: 0;
+                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.09), transparent);
+                transform: translateX(-70%);
+                pointer-events: none;
             }
 
             .next-maker-label {
-                color: var(--coffee-muted);
+                color: var(--coffee-accent);
                 font-size: 0.78rem;
                 font-weight: 750;
-                letter-spacing: 0.04em;
+                letter-spacing: 0.08em;
                 text-transform: uppercase;
                 margin-bottom: 0.2rem;
             }
 
             .next-maker-name {
                 color: var(--coffee-ink);
-                font-size: 1.65rem;
+                font-size: 1.8rem;
                 font-weight: 800;
                 line-height: 1.15;
                 margin-bottom: 0.25rem;
@@ -155,6 +361,69 @@ def inject_styles() -> None:
                 color: var(--coffee-muted);
                 font-size: 0.95rem;
                 margin: 0;
+            }
+
+            .hero-row {
+                display: flex;
+                align-items: flex-end;
+                justify-content: space-between;
+                gap: 1rem;
+                margin-bottom: 1rem;
+            }
+
+            .hero-kicker {
+                color: var(--coffee-accent);
+                font-size: 0.78rem;
+                font-weight: 800;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+                margin-bottom: 0.2rem;
+            }
+
+            .hero-copy {
+                color: var(--coffee-muted);
+                margin: 0;
+                max-width: 40rem;
+            }
+
+            .status-pill {
+                border: 1px solid rgba(56, 217, 196, 0.35);
+                border-radius: 999px;
+                color: var(--coffee-accent);
+                background: rgba(56, 217, 196, 0.08);
+                padding: 0.45rem 0.75rem;
+                font-size: 0.8rem;
+                font-weight: 750;
+                white-space: nowrap;
+            }
+
+            @media (max-width: 760px) {
+                .block-container {
+                    padding-top: 1rem;
+                }
+
+                div[data-testid="stMetric"] {
+                    padding: 0.75rem 0.85rem;
+                }
+
+                .hero-row {
+                    display: block;
+                }
+
+                .status-pill {
+                    display: inline-block;
+                    margin-top: 0.8rem;
+                }
+
+                h1 {
+                    font-size: 2rem;
+                }
+
+                button[data-baseweb="tab"] {
+                    min-width: auto;
+                    padding-left: 0.7rem;
+                    padding-right: 0.7rem;
+                }
             }
         </style>
         """,
@@ -166,6 +435,35 @@ def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def hash_password(password: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        PASSWORD_SALT,
+        PASSWORD_ITERATIONS,
+    ).hex()
+
+
+def authenticate_user(name: str, password: str) -> sqlite3.Row | None:
+    cleaned_name = " ".join(name.strip().split())
+    if not cleaned_name or not password:
+        return None
+
+    with closing(get_connection()) as conn:
+        row = conn.execute(
+            """
+            SELECT id, name, password_hash, employee_id, is_admin
+            FROM users
+            WHERE name = ?
+            """,
+            (cleaned_name,),
+        ).fetchone()
+
+    if row and hmac.compare_digest(row["password_hash"], hash_password(password)):
+        return row
+    return None
 
 
 def init_db() -> None:
@@ -202,7 +500,27 @@ def init_db() -> None:
                 FOREIGN KEY (coffee_id) REFERENCES coffees(id),
                 FOREIGN KEY (reviewer_id) REFERENCES employees(id)
             );
+
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                employee_id INTEGER UNIQUE,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (employee_id) REFERENCES employees(id)
+            );
             """
+        )
+        conn.execute(
+            """
+            INSERT INTO users (name, password_hash, is_admin)
+            VALUES (?, ?, 1)
+            ON CONFLICT(name) DO UPDATE SET
+                password_hash = excluded.password_hash,
+                is_admin = 1
+            """,
+            (ADMIN_NAME, ADMIN_PASSWORD_HASH),
         )
         conn.commit()
 
@@ -215,6 +533,33 @@ def add_employee(name: str) -> tuple[bool, str]:
     try:
         with closing(get_connection()) as conn:
             conn.execute("INSERT INTO employees (name) VALUES (?)", (cleaned_name,))
+            conn.commit()
+        return True, f"Added {cleaned_name}."
+    except sqlite3.IntegrityError:
+        return False, f"{cleaned_name} already exists."
+
+
+def add_employee_user(name: str, password: str) -> tuple[bool, str]:
+    cleaned_name = " ".join(name.strip().split())
+    if not cleaned_name:
+        return False, "Enter your name."
+    if len(password) < 6:
+        return False, "Choose a password with at least 6 characters."
+
+    try:
+        with closing(get_connection()) as conn:
+            cursor = conn.execute(
+                "INSERT INTO employees (name) VALUES (?)",
+                (cleaned_name,),
+            )
+            employee_id = cursor.lastrowid
+            conn.execute(
+                """
+                INSERT INTO users (name, password_hash, employee_id)
+                VALUES (?, ?, ?)
+                """,
+                (cleaned_name, hash_password(password), employee_id),
+            )
             conn.commit()
         return True, f"Added {cleaned_name}."
     except sqlite3.IntegrityError:
@@ -463,17 +808,55 @@ def choose_next_maker(totals: pd.DataFrame) -> tuple[str, str]:
 
 
 def render_add_employee() -> None:
-    with st.form("add_employee", clear_on_submit=True):
-        name = st.text_input("Employee name")
-        submitted = st.form_submit_button("Add employee", type="primary")
+    st.caption(f"Pass barista training with at least {PASS_MARK}% before joining the tally.")
+
+    with st.form("add_employee_training", clear_on_submit=False):
+        name = st.text_input("Your name")
+        password = st.text_input("Create password", type="password")
+        answers = []
+        for index, item in enumerate(TRAINING_QUESTIONS, start=1):
+            answer = st.selectbox(
+                f"{index}. {item['question']}",
+                ["Select an answer", *item["options"]],
+                key=f"training_question_{index}",
+            )
+            answers.append(answer)
+
+        submitted = st.form_submit_button("Submit training test", type="primary")
 
     if submitted:
-        ok, message = add_employee(name)
+        missing_answers = [answer for answer in answers if answer == "Select an answer"]
+        if missing_answers:
+            st.warning("Answer every training question before submitting.")
+            return
+
+        correct = sum(
+            answer == item["answer"]
+            for answer, item in zip(answers, TRAINING_QUESTIONS, strict=True)
+        )
+        score = round((correct / len(TRAINING_QUESTIONS)) * 100)
+
+        if score < PASS_MARK:
+            st.error(f"Training score: {score}%. You need {PASS_MARK}% to join the coffee counter.")
+            return
+
+        ok, message = add_employee_user(name, password)
         if ok:
-            st.success(message)
+            st.success(f"Training score: {score}%. {message}")
             st.rerun()
         else:
             st.warning(message)
+
+
+def render_learn_documentation() -> None:
+    st.subheader("Learn the coffee rules")
+    st.caption("Read this before taking barista training.")
+
+    for title, body in LEARN_SECTIONS:
+        with st.expander(title, expanded=title.startswith("1.")):
+            st.write(body)
+
+    st.info(f"Training pass mark: {PASS_MARK}%. You need at least 9 correct answers out of 10.")
 
 
 def render_record_coffee(employees: pd.DataFrame) -> None:
@@ -533,7 +916,6 @@ def render_employee_management() -> None:
         st.caption("No employees yet.")
         return
 
-    st.subheader("Employees")
     for employee in employees.itertuples(index=False):
         cols = st.columns([3, 1])
         status = "Active" if employee.active else "Archived"
@@ -628,12 +1010,83 @@ def render_overview(
     metric_cols[2].metric("Active employees", len(employees))
 
 
+def render_header() -> None:
+    st.markdown(
+        """
+        <div class="hero-row">
+            <div>
+                <div class="hero-kicker">Office brew ledger</div>
+                <h1>Coffee Counter</h1>
+                <p class="hero-copy">A fast, transparent tally for coffee duty, peer approval, and who makes the next round.</p>
+            </div>
+            <div class="status-pill">SQLite local system</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_login() -> None:
+    render_header()
+    left, right = st.columns([1, 1])
+
+    with left:
+        with st.container(border=True):
+            st.subheader("Sign in")
+            with st.form("login_form"):
+                name = st.text_input("Name")
+                password = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Sign in", type="primary")
+
+            if submitted:
+                user = authenticate_user(name, password)
+                if user:
+                    st.session_state["user"] = {
+                        "id": int(user["id"]),
+                        "name": user["name"],
+                        "employee_id": user["employee_id"],
+                        "is_admin": bool(user["is_admin"]),
+                    }
+                    st.rerun()
+                else:
+                    st.error("Name or password is incorrect.")
+
+    with right:
+        with st.container(border=True):
+            people_tabs = st.tabs(["Learn", "Join"])
+            with people_tabs[0]:
+                render_learn_documentation()
+            with people_tabs[1]:
+                st.subheader("Join the counter")
+                render_add_employee()
+
+
+def require_login() -> bool:
+    if "user" not in st.session_state:
+        render_login()
+        return False
+    return True
+
+
+def render_account_bar() -> None:
+    user = st.session_state["user"]
+    cols = st.columns([4, 1])
+    cols[0].caption(f"Signed in as {user['name']}")
+    if cols[1].button("Sign out"):
+        del st.session_state["user"]
+        st.rerun()
+
+
 def main() -> None:
     st.set_page_config(page_title="Coffee Counter", layout="wide")
     inject_styles()
     init_db()
 
-    st.title("Coffee Counter")
+    if not require_login():
+        return
+
+    render_header()
+    render_account_bar()
 
     employees = get_employees()
     totals = get_totals()
@@ -651,10 +1104,15 @@ def main() -> None:
             with action_tabs[1]:
                 render_review_queue(employees)
             with action_tabs[2]:
-                st.subheader("Add employee")
-                render_add_employee()
-                st.divider()
-                render_employee_management()
+                people_tabs = st.tabs(["Learn", "Training", "Employees"])
+                with people_tabs[0]:
+                    render_learn_documentation()
+                with people_tabs[1]:
+                    st.subheader("Join the counter")
+                    render_add_employee()
+                with people_tabs[2]:
+                    st.subheader("Employees")
+                    render_employee_management()
 
     with right:
         with st.container(border=True):
