@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 from datetime import date
+from html import escape
 from pathlib import Path
 
 import pandas as pd
@@ -11,6 +12,154 @@ import streamlit as st
 
 APP_DIR = Path(__file__).parent
 DB_PATH = APP_DIR / "coffee_counter.sqlite3"
+
+
+def inject_styles() -> None:
+    st.markdown(
+        """
+        <style>
+            :root {
+                --coffee-ink: #1f2933;
+                --coffee-muted: #5b6777;
+                --coffee-line: #d8dee8;
+                --coffee-panel: #ffffff;
+                --coffee-soft: #f6f8fb;
+                --coffee-accent: #256f68;
+                --coffee-accent-dark: #15534f;
+            }
+
+            [data-testid="stAppViewContainer"] {
+                background:
+                    linear-gradient(180deg, #f7fafc 0%, #eef3f7 100%);
+            }
+
+            [data-testid="stHeader"],
+            [data-testid="stToolbar"],
+            [data-testid="stDecoration"],
+            [data-testid="stDeployButton"] {
+                display: none;
+            }
+
+            .block-container {
+                max-width: 1180px;
+                padding-top: 2rem;
+                padding-bottom: 3rem;
+            }
+
+            h1, h2, h3 {
+                color: var(--coffee-ink);
+                letter-spacing: 0;
+            }
+
+            h1 {
+                font-size: 2.25rem;
+                font-weight: 750;
+                margin-bottom: 0.25rem;
+            }
+
+            h2, h3 {
+                font-weight: 700;
+            }
+
+            p, label, [data-testid="stMarkdownContainer"] {
+                color: var(--coffee-muted);
+            }
+
+            div[data-testid="stMetric"] {
+                background: var(--coffee-panel);
+                border: 1px solid var(--coffee-line);
+                border-radius: 8px;
+                padding: 1rem 1.1rem;
+                box-shadow: 0 10px 28px rgba(31, 41, 51, 0.06);
+            }
+
+            div[data-testid="stMetricLabel"] p {
+                color: var(--coffee-muted);
+                font-size: 0.85rem;
+            }
+
+            div[data-testid="stMetricValue"] {
+                color: var(--coffee-ink);
+                font-weight: 750;
+            }
+
+            [data-testid="stVerticalBlockBorderWrapper"] {
+                border-color: var(--coffee-line);
+                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.88);
+                box-shadow: 0 12px 34px rgba(31, 41, 51, 0.06);
+            }
+
+            div[data-baseweb="tab-list"] {
+                gap: 0.35rem;
+                border-bottom: 1px solid var(--coffee-line);
+            }
+
+            button[data-baseweb="tab"] {
+                border-radius: 7px 7px 0 0;
+                color: var(--coffee-muted);
+                font-weight: 650;
+            }
+
+            button[data-baseweb="tab"][aria-selected="true"] {
+                color: var(--coffee-accent-dark);
+                background: #e8f3f1;
+            }
+
+            .stButton button,
+            .stFormSubmitButton button {
+                border-radius: 7px;
+                font-weight: 650;
+            }
+
+            .stButton button[kind="primary"],
+            .stFormSubmitButton button[kind="primary"] {
+                background: var(--coffee-accent);
+                border-color: var(--coffee-accent);
+            }
+
+            .stButton button[kind="primary"]:hover,
+            .stFormSubmitButton button[kind="primary"]:hover {
+                background: var(--coffee-accent-dark);
+                border-color: var(--coffee-accent-dark);
+            }
+
+            .next-maker {
+                background: linear-gradient(135deg, #ffffff 0%, #edf7f5 100%);
+                border: 1px solid var(--coffee-line);
+                border-left: 6px solid var(--coffee-accent);
+                border-radius: 8px;
+                padding: 1.1rem 1.25rem;
+                margin-bottom: 1rem;
+                box-shadow: 0 12px 34px rgba(31, 41, 51, 0.07);
+            }
+
+            .next-maker-label {
+                color: var(--coffee-muted);
+                font-size: 0.78rem;
+                font-weight: 750;
+                letter-spacing: 0.04em;
+                text-transform: uppercase;
+                margin-bottom: 0.2rem;
+            }
+
+            .next-maker-name {
+                color: var(--coffee-ink);
+                font-size: 1.65rem;
+                font-weight: 800;
+                line-height: 1.15;
+                margin-bottom: 0.25rem;
+            }
+
+            .next-maker-reason {
+                color: var(--coffee-muted);
+                font-size: 0.95rem;
+                margin: 0;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def get_connection() -> sqlite3.Connection:
@@ -396,7 +545,6 @@ def render_employee_management() -> None:
 
 
 def render_leaderboard(totals: pd.DataFrame) -> None:
-    st.subheader("Approved coffee totals")
     if totals.empty:
         st.caption("No active employees yet.")
         return
@@ -411,7 +559,15 @@ def render_leaderboard(totals: pd.DataFrame) -> None:
         }
     ).drop(columns=["employee_id"])
 
-    st.dataframe(display, hide_index=True, use_container_width=True)
+    st.dataframe(
+        display,
+        hide_index=True,
+        use_container_width=True,
+        height=280,
+        column_config={
+            "Average rating": st.column_config.NumberColumn(format="%.2f"),
+        },
+    )
 
     chart_data = totals.set_index("employee")["approved_cups"]
     if int(chart_data.sum()) > 0:
@@ -419,7 +575,6 @@ def render_leaderboard(totals: pd.DataFrame) -> None:
 
 
 def render_recent_entries() -> None:
-    st.subheader("Recent coffee logs")
     entries = get_recent_entries()
     if entries.empty:
         st.caption("No coffees recorded yet.")
@@ -438,45 +593,78 @@ def render_recent_entries() -> None:
         }
     ).drop(columns=["id", "created_at"])
 
-    st.dataframe(display, hide_index=True, use_container_width=True)
+    st.dataframe(
+        display,
+        hide_index=True,
+        use_container_width=True,
+        height=330,
+        column_config={
+            "Average rating": st.column_config.NumberColumn(format="%.2f"),
+        },
+    )
+
+
+def render_overview(
+    employees: pd.DataFrame,
+    next_maker: str,
+    next_reason: str,
+) -> None:
+    safe_next_maker = escape(next_maker)
+    safe_next_reason = escape(next_reason)
+    st.markdown(
+        f"""
+        <div class="next-maker">
+            <div class="next-maker-label">Next coffee maker</div>
+            <div class="next-maker-name">{safe_next_maker}</div>
+            <p class="next-maker-reason">{safe_next_reason}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Approved cups", get_total_approved_cups())
+    metric_cols[1].metric("Pending reviews", get_pending_review_count())
+    metric_cols[2].metric("Active employees", len(employees))
 
 
 def main() -> None:
     st.set_page_config(page_title="Coffee Counter", layout="wide")
+    inject_styles()
     init_db()
 
     st.title("Coffee Counter")
-    st.caption("Track in-house coffees by employee, with peer approval before anything counts.")
 
     employees = get_employees()
     totals = get_totals()
     next_maker, next_reason = choose_next_maker(totals)
 
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Approved cups", get_total_approved_cups())
-    metric_cols[1].metric("Active employees", len(employees))
-    metric_cols[2].metric("Pending reviews", get_pending_review_count())
-    metric_cols[3].metric("Next coffee maker", next_maker)
-    st.caption(next_reason)
-
-    st.divider()
+    render_overview(employees, next_maker, next_reason)
 
     left, right = st.columns([1, 2])
     with left:
-        st.subheader("Record coffee")
-        render_record_coffee(employees)
-        st.divider()
-        render_review_queue(employees)
-        st.divider()
-        st.subheader("Add employee")
-        render_add_employee()
-        st.divider()
-        render_employee_management()
+        with st.container(border=True):
+            action_tabs = st.tabs(["Log", "Review", "People"])
+            with action_tabs[0]:
+                st.subheader("Record coffee")
+                render_record_coffee(employees)
+            with action_tabs[1]:
+                render_review_queue(employees)
+            with action_tabs[2]:
+                st.subheader("Add employee")
+                render_add_employee()
+                st.divider()
+                render_employee_management()
 
     with right:
-        render_leaderboard(totals)
-        st.divider()
-        render_recent_entries()
+        with st.container(border=True):
+            view_tabs = st.tabs(["Totals", "Logbook"])
+            with view_tabs[0]:
+                st.subheader("Approved coffee totals")
+                render_leaderboard(totals)
+            with view_tabs[1]:
+                st.subheader("Recent coffee logs")
+                render_recent_entries()
 
 
 if __name__ == "__main__":
