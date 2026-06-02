@@ -528,6 +528,16 @@ CREATE TABLE IF NOT EXISTS coffees (
     FOREIGN KEY (employee_id) REFERENCES employees(id)
 );
 
+
+CREATE TABLE IF NOT EXISTS coffee_recipients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    coffee_id INTEGER NOT NULL,
+    employee_id INTEGER NOT NULL,
+    UNIQUE(coffee_id, employee_id),
+    FOREIGN KEY (coffee_id) REFERENCES coffees(id),
+    FOREIGN KEY (employee_id) REFERENCES employees(id)
+);
+
 CREATE TABLE IF NOT EXISTS coffee_reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     coffee_id INTEGER NOT NULL,
@@ -819,12 +829,28 @@ def set_employee_active(employee_id: int, active: bool) -> None:
 # Coffee & review helpers
 # ---------------------------------------------------------------------------
 
-def add_coffee(employee_id: int, cups: int, coffee_type: str, coffee_date: date, note: str) -> None:
+def add_coffee(
+    employee_id: int,
+    cups: int,
+    coffee_type: str,
+    coffee_date: date,
+    note: str,
+    recipients: list[int],
+) -> None:
     with closing(get_connection()) as conn:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO coffees (employee_id, cups, coffee_type, coffee_date, note) VALUES (?, ?, ?, ?, ?)",
             (employee_id, cups, coffee_type, coffee_date.isoformat(), note.strip() or None),
         )
+
+        coffee_id = cur.lastrowid
+
+        for rid in recipients:
+            conn.execute(
+                "INSERT OR IGNORE INTO coffee_recipients (coffee_id, employee_id) VALUES (?, ?)",
+                (coffee_id, rid),
+            )
+
         conn.commit()
 
 
@@ -954,13 +980,14 @@ SELECT c.id, c.coffee_date AS date, e.name AS employee, c.cups,
        c.coffee_type, COALESCE(c.note, '') AS note
 FROM coffees c
 JOIN employees e ON e.id = c.employee_id
+JOIN coffee_recipients rc ON rc.coffee_id = c.id AND rc.employee_id = ?
 LEFT JOIN coffee_reviews cr ON cr.coffee_id = c.id AND cr.reviewer_id = ?
 WHERE c.employee_id != ? AND e.active = 1 AND e.team_id = ?
     AND cr.id IS NULL
     AND c.id NOT IN (SELECT coffee_id FROM coffee_reviews WHERE approved = 0)
 ORDER BY c.coffee_date ASC, c.created_at ASC
 """,
-            conn, params=(reviewer_id, reviewer_id, team_id),
+            conn, params=(reviewer_id, reviewer_id, reviewer_id, team_id),
         )
 
 
@@ -1488,11 +1515,41 @@ def render_main_app(team: dict) -> None:
             coffee_options = coffee_types_df["name"].tolist() if not coffee_types_df.empty else ["Filter"]
             ctype = st.selectbox("Coffee type", coffee_options)
             cups = st.number_input("Cups made", min_value=1, max_value=50, value=1, step=1)
+
+            teammates = employees[employees["id"] != eid]
+            recipient_options = {
+                row["name"]: int(row["id"])
+                for _, row in teammates.iterrows()
+            }
+
+            recipients_selected = st.multiselect(
+                "Who received coffee?",
+                list(recipient_options.keys())
+            )
+
             cdate = st.date_input("Date", value=date.today())
             note = st.text_input("Note", placeholder="Optional")
+
             if st.form_submit_button("Log coffee", type="primary"):
-                add_coffee(eid, int(cups), ctype, cdate, note)
-                st.success("Coffee logged! Your teammates will review it.")
+
+                recipients = [
+                    recipient_options[name]
+                    for name in recipients_selected
+                ]
+
+                if not recipients:
+                    st.warning("Select at least one recipient.")
+                    st.stop()
+
+                add_coffee(
+                    eid,
+                    int(cups),
+                    ctype,
+                    cdate,
+                    note,
+                    recipients,
+                )
+                st.success("Coffee logged! Only recipients can review it.")
                 st.rerun()
         st.info(
             "**How it works:** Log your coffee → teammates approve & rate it → "
