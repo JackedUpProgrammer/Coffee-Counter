@@ -1231,9 +1231,11 @@ def render_header(team_name: str | None = None) -> None:
 
 def render_account_bar() -> None:
     user = st.session_state["user"]
-    cols = st.columns([4, 1])
+    cols = st.columns([4, 1, 1])
     cols[0].caption(f"Signed in as **{user['name']}**")
-    if cols[1].button("Sign out"):
+    if cols[1].button("🔄 Refresh"):
+        st.rerun()
+    if cols[2].button("Sign out"):
         del st.session_state["user"]
         st.rerun()
 
@@ -1493,16 +1495,20 @@ def render_main_app(team: dict) -> None:
 
         st.subheader("Your badges")
         earned = get_earned_badges(eid)
-        badge_html = ['<div class="badge-grid">']
-        for b in BADGE_DEFS:
-            cls = "badge-card earned" if b["key"] in earned else "badge-card locked"
-            badge_html.append(
-                f'<div class="{cls}"><div class="badge-icon">{b["icon"]}</div>'
-                f'<div class="badge-name">{escape(b["name"])}</div>'
-                f'<div class="badge-desc">{escape(b["desc"])}</div></div>'
-            )
-        badge_html.append("</div>")
-        st.markdown("".join(badge_html), unsafe_allow_html=True)
+        if not earned:
+            st.caption("No achievements unlocked yet — start brewing! ☕")
+        else:
+            badge_html = ['<div class="badge-grid">']
+            for b in BADGE_DEFS:
+                if b["key"] not in earned:
+                    continue
+                badge_html.append(
+                    f'<div class="badge-card earned"><div class="badge-icon">{b["icon"]}</div>'
+                    f'<div class="badge-name">{escape(b["name"])}</div>'
+                    f'<div class="badge-desc">{escape(b["desc"])}</div></div>'
+                )
+            badge_html.append("</div>")
+            st.markdown("".join(badge_html), unsafe_allow_html=True)
 
         wn = date.today().isocalendar()[1]
         ch = CHALLENGES[wn % len(CHALLENGES)]
