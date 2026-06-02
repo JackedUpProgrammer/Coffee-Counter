@@ -28,10 +28,6 @@ ADMIN_PASSWORD_HASH = (
     "44a09039f5a01f0c0fbff626c196ef6cd4a58625ceb6b0a7fac4599975b1d691"
 )
 
-COFFEE_TYPES = [
-    "Filter", "Espresso", "Cappuccino", "Flat White", "Latte",
-    "Americano", "Mocha", "Pour Over", "French Press", "Other",
-]
 
 RANKS = [
     (0,   "Intern Brewer",    "🫘"),
@@ -505,6 +501,22 @@ CREATE TABLE IF NOT EXISTS employees (
     FOREIGN KEY (team_id) REFERENCES teams(id)
 );
 
+CREATE TABLE IF NOT EXISTS coffee_types (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    caffeine_mg INTEGER NOT NULL DEFAULT 0,
+    calories INTEGER NOT NULL DEFAULT 0,
+    sugar_g REAL NOT NULL DEFAULT 0,
+    milk_type TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(team_id, name),
+    FOREIGN KEY (team_id) REFERENCES teams(id),
+    FOREIGN KEY (created_by) REFERENCES employees(id)
+);
+
 CREATE TABLE IF NOT EXISTS coffees (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     employee_id INTEGER NOT NULL,
@@ -652,6 +664,25 @@ def create_team(name: str, employee_id: int) -> tuple[bool, str]:
                 "UPDATE employees SET team_id = ?, is_team_admin = 1 WHERE id = ?",
                 (tid, employee_id),
             )
+            defaults = [
+                ("Filter", 95, 5, 0.0, "None"),
+                ("Espresso", 64, 3, 0.0, "None"),
+                ("Cappuccino", 80, 120, 6.0, "Full Cream"),
+                ("Flat White", 130, 140, 7.0, "Full Cream"),
+                ("Latte", 120, 190, 10.0, "Full Cream"),
+                ("Americano", 95, 10, 0.0, "None"),
+            ]
+
+            for coffee in defaults:
+                conn.execute(
+                    """
+                    INSERT INTO coffee_types
+                    (team_id, name, caffeine_mg, calories, sugar_g, milk_type, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (tid, coffee[0], coffee[1], coffee[2], coffee[3], coffee[4], employee_id),
+                )
+
             conn.commit()
         return True, f"Team **{cleaned}** created! Invite code: **{code}**"
     except sqlite3.IntegrityError:
@@ -692,6 +723,73 @@ def is_user_team_admin(employee_id: int) -> bool:
             "SELECT is_team_admin FROM employees WHERE id = ?", (employee_id,)
         ).fetchone()
     return bool(row["is_team_admin"]) if row else False
+
+
+
+def get_team_coffee_types(team_id: int, active_only: bool = True) -> pd.DataFrame:
+    q = """
+    SELECT id, name, caffeine_mg, calories, sugar_g, milk_type, active
+    FROM coffee_types
+    WHERE team_id = ?
+    """
+    params: list = [team_id]
+
+    if active_only:
+        q += " AND active = 1"
+
+    q += " ORDER BY name"
+
+    with closing(get_connection()) as conn:
+        return pd.read_sql_query(q, conn, params=params)
+
+
+def add_coffee_type(
+    team_id: int,
+    name: str,
+    caffeine_mg: int,
+    calories: int,
+    sugar_g: float,
+    milk_type: str,
+    created_by: int,
+) -> tuple[bool, str]:
+
+    cleaned = " ".join(name.strip().split())
+
+    if not cleaned:
+        return False, "Enter a coffee name."
+
+    try:
+        with closing(get_connection()) as conn:
+            conn.execute(
+                """
+                INSERT INTO coffee_types
+                (
+                    team_id,
+                    name,
+                    caffeine_mg,
+                    calories,
+                    sugar_g,
+                    milk_type,
+                    created_by
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    team_id,
+                    cleaned,
+                    caffeine_mg,
+                    calories,
+                    sugar_g,
+                    milk_type,
+                    created_by,
+                ),
+            )
+            conn.commit()
+
+        return True, "Coffee type added."
+
+    except sqlite3.IntegrityError:
+        return False, "Coffee type already exists."
 
 
 # ---------------------------------------------------------------------------
@@ -1386,7 +1484,9 @@ def render_main_app(team: dict) -> None:
         st.subheader("I made coffee ☕")
         st.caption(f"Logging as **{user['name']}**")
         with st.form("log_coffee", clear_on_submit=True):
-            ctype = st.selectbox("Coffee type", COFFEE_TYPES)
+            coffee_types_df = get_team_coffee_types(tid)
+            coffee_options = coffee_types_df["name"].tolist() if not coffee_types_df.empty else ["Filter"]
+            ctype = st.selectbox("Coffee type", coffee_options)
             cups = st.number_input("Cups made", min_value=1, max_value=50, value=1, step=1)
             cdate = st.date_input("Date", value=date.today())
             note = st.text_input("Note", placeholder="Optional")
@@ -1613,6 +1713,57 @@ def render_main_app(team: dict) -> None:
                     st.divider()
                     if st.button(f"Remove {m.name} from team", key=f"tr_{m.id}"):
                         remove_from_team(m.id); st.success(f"Removed {m.name}."); st.rerun()
+
+            st.divider()
+            st.subheader("☕ Coffee types")
+
+            coffee_types = get_team_coffee_types(tid, active_only=False)
+
+            if not coffee_types.empty:
+                st.dataframe(
+                    coffee_types.rename(columns={
+                        "name": "Coffee",
+                        "caffeine_mg": "Caffeine (mg)",
+                        "calories": "Calories",
+                        "sugar_g": "Sugar (g)",
+                        "milk_type": "Milk",
+                        "active": "Active",
+                    }),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+            with st.form("add_coffee_type"):
+                cname = st.text_input("Coffee name")
+                caffeine = st.number_input("Caffeine per cup (mg)", 0, 1000, 95)
+                calories = st.number_input("Calories per cup", 0, 2000, 5)
+                sugar = st.number_input("Sugar (g)", 0.0, 200.0, 0.0)
+                milk = st.selectbox(
+                    "Milk type",
+                    ["None", "Full Cream", "Low Fat", "Oat", "Almond", "Soy"]
+                )
+
+                submitted = st.form_submit_button(
+                    "Add coffee type",
+                    type="primary"
+                )
+
+                if submitted:
+                    ok, msg = add_coffee_type(
+                        tid,
+                        cname,
+                        int(caffeine),
+                        int(calories),
+                        float(sugar),
+                        milk,
+                        eid,
+                    )
+
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.warning(msg)
 
             st.divider()
             st.warning("⚠️ Disbanding deletes all coffee data but keeps user accounts.")
